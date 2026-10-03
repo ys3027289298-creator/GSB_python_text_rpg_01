@@ -1,6 +1,8 @@
 from classes.game import Person, bcolors
 from classes.magic import Spell
 from classes.inventory import Item
+from classes.equipment import Equipment
+from classes.battle import Battle, BattleState
 import random
 
 
@@ -27,6 +29,13 @@ hielixer = Item("MegaElixer", "elixer", "Fully restores party's HP/MP", 9999)
 grenade = Item("Grenade", "attack", "Deals 500 damage", 500)
 
 
+# Create some Equipment
+iron_sword = Equipment("Iron Sword", "weapon", "Atk +20", atk=20)
+steel_sword = Equipment("Steel Sword", "weapon", "Atk +45", atk=45)
+leather_armor = Equipment("Leather Armor", "armor", "Def +10", df=10)
+iron_shield = Equipment("Iron Shield", "shield", "Def +25", df=25)
+
+
 player_spells = [fire, thunder, blizzard, meteor, cure, cura]
 enemy_spells = [fire, meteor, curaga]
 player_items = [{"item": potion, "quantity": 15}, {"item": hipotion, "quantity": 5},
@@ -34,10 +43,21 @@ player_items = [{"item": potion, "quantity": 15}, {"item": hipotion, "quantity":
                 {"item": hielixer, "quantity": 2}, {"item": grenade, "quantity": 5}]
 
 
+def read_index(prompt):
+    while True:
+        try:
+            return int(input(prompt)) - 1
+        except ValueError:
+            continue
+
+
 # Instantiate People
 player1 = Person("Valos:", 3260, 132, 300, 34, player_spells, player_items)
 player2 = Person("Nick :", 4160, 188, 311, 34, player_spells, player_items)
 player3 = Person("Robot:", 3089, 174, 288, 34, player_spells, player_items)
+
+for player in (player1, player2, player3):
+    player.armory = [iron_sword, steel_sword, leather_armor, iron_shield]
 
 enemy1 = Person("Imp  ", 1250, 130, 560, 325, enemy_spells, [])
 enemy2 = Person("Magus", 18200, 701, 525, 25, enemy_spells, [])
@@ -47,12 +67,11 @@ enemy3 = Person("Imp  ", 1250, 130, 560, 325, enemy_spells, [])
 players = [player1, player2, player3]
 enemies = [enemy1, enemy2, enemy3]
 
-running = True
-i = 0
+battle = Battle(players, enemies)
 
 print(bcolors.FAIL + bcolors.BOLD + "AN ENEMY ATTACKS!" + bcolors.ENDC)
 
-while running:
+while not battle.is_over:
     print("======================")
 
     print("\n\n")
@@ -62,149 +81,172 @@ while running:
 
     print("\n")
 
-    for enemy in enemies:
+    for enemy in battle.living_enemies():
         enemy.get_enemy_stats()
 
+    fled = False
+
     for player in players:
+        if battle.is_over:
+            break
+        if not player.is_alive():
+            continue
 
         player.choose_action()
-        choice = input("    Choose action: ")
-        index = int(choice) - 1
+        index = read_index("    Choose action: ")
 
         if index == 0:
-            dmg = player.generate_damage()
             enemy = player.choose_target(enemies)
+            if enemy is None:
+                continue
 
-            enemies[enemy].take_damage(dmg)
-            print("You attacked " + enemies[enemy].name.replace(" ", "") + " for", dmg, "points of damage.")
+            dmg = battle.attack(player, enemy)
+            print("You attacked " + enemy.name.replace(" ", "") + " for", dmg, "points of damage.")
 
-            if enemies[enemy].get_hp() == 0:
-                print(enemies[enemy].name.replace(" ", "") + " has died.")
-                del enemies[enemy]
+            if enemy.get_hp() == 0:
+                print(enemy.name.replace(" ", "") + " has died.")
 
         elif index == 1:
             player.choose_magic()
-            magic_choice = int(input("    Choose magic: ")) - 1
+            magic_choice = read_index("    Choose magic: ")
 
             if magic_choice == -1:
                 continue
+            if not 0 <= magic_choice < len(player.magic):
+                continue
 
             spell = player.magic[magic_choice]
-            magic_dmg = spell.generate_damage()
 
-            current_mp = player.get_mp()
-
-            if spell.cost > current_mp:
+            if spell.cost > player.get_mp():
                 print(bcolors.FAIL + "\nNot enough MP\n" + bcolors.ENDC)
                 continue
 
-            player.reduce_mp(spell.cost)
-
             if spell.type == "white":
-                player.heal(magic_dmg)
+                magic_dmg = battle.cast_spell(player, spell)
                 print(bcolors.OKBLUE + "\n" + spell.name + " heals for", str(magic_dmg), "HP." + bcolors.ENDC)
             elif spell.type == "black":
-
                 enemy = player.choose_target(enemies)
+                if enemy is None:
+                    continue
 
-                enemies[enemy].take_damage(magic_dmg)
+                magic_dmg = battle.cast_spell(player, spell, enemy)
+                print(bcolors.OKBLUE + "\n" + spell.name + " deals", str(magic_dmg),
+                      "points of damage to " + enemy.name.replace(" ", "") + bcolors.ENDC)
 
-                print(bcolors.OKBLUE + "\n" + spell.name + " deals", str(magic_dmg), "points of damage to " + enemies[enemy].name.replace(" ", "") + bcolors.ENDC)
-
-                if enemies[enemy].get_hp() == 0:
-                    print(enemies[enemy].name.replace(" ", "") + " has died.")
-                    del enemies[enemy]
+                if enemy.get_hp() == 0:
+                    print(enemy.name.replace(" ", "") + " has died.")
 
         elif index == 2:
             player.choose_item()
-            item_choice = int(input("    Choose item: ")) - 1
+            item_choice = read_index("    Choose item: ")
 
             if item_choice == -1:
                 continue
+            if not 0 <= item_choice < len(player.items):
+                continue
 
-            item = player.items[item_choice]["item"]
+            entry = player.items[item_choice]
+            item = entry["item"]
 
-            if player.items[item_choice]["quantity"] == 0:
+            if entry["quantity"] <= 0:
                 print(bcolors.FAIL + "\n" + "None left..." + bcolors.ENDC)
                 continue
 
-            player.items[item_choice]["quantity"] -= 1
-
             if item.type == "potion":
-                player.heal(item.prop)
+                if not battle.use_item(player, entry):
+                    print(bcolors.FAIL + "\nHP is already full." + bcolors.ENDC)
+                    continue
                 print(bcolors.OKGREEN + "\n" + item.name + " heals for", str(item.prop), "HP" + bcolors.ENDC)
             elif item.type == "elixer":
-
-                if item.name == "MegaElixer":
-                    for i in players:
-                        i.hp = i.maxhp
-                        i.mp = i.maxmp
-                else:
-                    player.hp = player.maxhp
-                    player.mp = player.maxmp
+                battle.use_item(player, entry, party=players)
                 print(bcolors.OKGREEN + "\n" + item.name + " fully restores HP/MP" + bcolors.ENDC)
             elif item.type == "attack":
                 enemy = player.choose_target(enemies)
-                enemies[enemy].take_damage(item.prop)
+                if enemy is None:
+                    continue
+                battle.use_item(player, entry, target=enemy)
+                print(bcolors.FAIL + "\n" + item.name + " deals", str(item.prop),
+                      "points of damage to " + enemy.name + bcolors.ENDC)
 
-                print(bcolors.FAIL + "\n" + item.name + " deals", str(item.prop), "points of damage to " + enemies[enemy].name + bcolors.ENDC)
+                if enemy.get_hp() == 0:
+                    print(enemy.name.replace(" ", "") + " has died.")
 
-                if enemies[enemy].get_hp() == 0:
-                    print(enemies[enemy].name.replace(" ", "") + " has died.")
-                    del enemies[enemy]
+        elif index == 3:
+            player.choose_equipment()
+            equip_choice = read_index("    Choose equipment: ")
 
-    # Check if battle is over
-    defeated_enemies = 0
-    defeated_players = 0
+            if equip_choice == -1:
+                continue
+            if not 0 <= equip_choice < len(player.armory):
+                continue
 
-    for enemy in enemies:
-        if enemy.get_hp() == 0:
-            defeated_enemies += 1
+            equipment = player.armory[equip_choice]
+            battle.equip(player, equipment)
+            print(bcolors.WARNING + "\n" + player.name.replace(" ", "") + " equipped " + equipment.name + bcolors.ENDC)
 
-    for player in players:
-        if player.get_hp() == 0:
-            defeated_players += 1
+        elif index == 4:
+            if battle.flee(player):
+                print(bcolors.WARNING + "\nYou ran away!" + bcolors.ENDC)
+                fled = True
+                break
+            else:
+                print(bcolors.FAIL + "\nCouldn't escape!" + bcolors.ENDC)
 
-    # Check if Player won
-    if defeated_enemies == 2:
-        print(bcolors.OKGREEN + "You win!" + bcolors.ENDC)
-        running = False
-
-    # Check if Enemy won
-    elif defeated_players == 2:
-        print(bcolors.FAIL + "Your enemies have defeated you!" + bcolors.ENDC)
-        running = False
+    if battle.is_over or fled:
+        break
 
     print("\n")
     # Enemy attack phase
-    for enemy in enemies:
+    battle.state = BattleState.ENEMY_PHASE
+    for enemy in battle.living_enemies():
+        if battle.is_over:
+            break
+        targets = battle.living_players()
+        if not targets:
+            break
+
         enemy_choice = random.randrange(0, 2)
 
         if enemy_choice == 0:
             # Chose attack
-            target = random.randrange(0, 3)
-            enemy_dmg = enemy.generate_damage()
+            target = random.choice(targets)
+            enemy_dmg = battle.attack(enemy, target)
+            print(enemy.name.replace(" ", "") + " attacks " + target.name.replace(" ", "") + " for", enemy_dmg)
 
-            players[target].take_damage(enemy_dmg)
-            print(enemy.name.replace(" ", "") + " attacks " + players[target].name.replace(" ", "") + " for", enemy_dmg)
+            if target.get_hp() == 0:
+                print(target.name.replace(" ", "") + " has died.")
 
         elif enemy_choice == 1:
-            spell, magic_dmg = enemy.choose_enemy_spell()
-            enemy.reduce_mp(spell.cost)
+            chosen = enemy.choose_enemy_spell()
+            if chosen is None:
+                target = random.choice(targets)
+                enemy_dmg = battle.attack(enemy, target)
+                print(enemy.name.replace(" ", "") + " attacks " + target.name.replace(" ", "") + " for", enemy_dmg)
+
+                if target.get_hp() == 0:
+                    print(target.name.replace(" ", "") + " has died.")
+                continue
+
+            spell, _ = chosen
 
             if spell.type == "white":
-                enemy.heal(magic_dmg)
+                magic_dmg = battle.cast_spell(enemy, spell)
                 print(bcolors.OKBLUE + spell.name + " heals " + enemy.name + " for", str(magic_dmg), "HP." + bcolors.ENDC)
             elif spell.type == "black":
+                target = random.choice(targets)
+                magic_dmg = battle.cast_spell(enemy, spell, target)
+                print(bcolors.OKBLUE + "\n" + enemy.name.replace(" ", "") + "'s " + spell.name + " deals",
+                      str(magic_dmg), "points of damage to " + target.name.replace(" ", "") + bcolors.ENDC)
 
-                target = random.randrange(0, 3)
+                if target.get_hp() == 0:
+                    print(target.name.replace(" ", "") + " has died.")
 
-                players[target].take_damage(magic_dmg)
+    if not battle.is_over:
+        battle.state = BattleState.PLAYER_PHASE
 
-                print(bcolors.OKBLUE + "\n" + enemy.name.replace(" ", "") + "'s " + spell.name + " deals", str(magic_dmg), "points of damage to " + players[target].name.replace(" ", "") + bcolors.ENDC)
-
-                if players[target].get_hp() == 0:
-                    print(players[target].name.replace(" ", "") + " has died.")
-                    del players[player]
-            #print("Enemy chose", spell, "damage is", magic_dmg)
-
+if battle.state == BattleState.VICTORY:
+    print(bcolors.OKGREEN + "You win!" + bcolors.ENDC)
+elif battle.state == BattleState.DEFEAT:
+    print(bcolors.FAIL + "Your enemies have defeated you!" + bcolors.ENDC)
+elif battle.state == BattleState.FLED:
+    print(bcolors.WARNING + "You escaped the battle." + bcolors.ENDC)
