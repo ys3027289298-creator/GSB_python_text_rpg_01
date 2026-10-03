@@ -1,5 +1,5 @@
 import random
-import pprint
+
 
 class bcolors:
     HEADER = '\033[95m'
@@ -12,33 +12,65 @@ class bcolors:
     UNDERLINE = '\033[4m'
 
 
+def _clamp(value, low, high):
+    return max(low, min(high, value))
+
+
 class Person:
     def __init__(self, name, hp, mp, atk, df, magic, items):
-        self.maxhp = hp
-        self.hp = hp
-        self.maxmp = mp
-        self.mp = mp
-        self.atkl = atk - 10
-        self.atkh = atk + 10
-        self.df = df
-        self.magic = magic
-        self.items = items
-        self.actions = ["Attack", "Magic", "Items"]
         self.name = name
+        self.maxhp = max(1, int(hp))
+        self.hp = _clamp(hp, 0, self.maxhp)
+        self.maxmp = max(0, int(mp))
+        self.mp = _clamp(mp, 0, self.maxmp)
+        self.base_atk = max(0, int(atk))
+        self.base_df = max(0, int(df))
+        self.magic = list(magic or [])
+        self.items = list(items or [])
+        self.weapon = None
+        self.armor = None
+        self.actions = ["Attack", "Magic", "Items", "Flee"]
 
-    def generate_damage(self):
-        return random.randrange(self.atkl, self.atkh)
+    def get_atk(self):
+        bonus = self.weapon.prop if self.weapon else 0
+        return max(0, self.base_atk + bonus)
+
+    def get_df(self):
+        bonus = self.armor.prop if self.armor else 0
+        return max(0, self.base_df + bonus)
+
+    def generate_damage(self, rng=None):
+        rng = rng or random
+        atk = self.get_atk()
+        low = max(0, atk - 10)
+        high = atk + 10
+        if high <= low:
+            return low
+        return rng.randrange(low, high)
 
     def take_damage(self, dmg):
-        self.hp -= dmg
-        if self.hp < 0:
-            self.hp = 0
+        dmg = max(0, int(dmg))
+        self.hp = _clamp(self.hp - dmg, 0, self.maxhp)
         return self.hp
 
     def heal(self, dmg):
-        self.hp += dmg
-        if self.hp > self.maxhp:
-            self.hp = self.maxhp
+        if self.hp <= 0:
+            return self.hp
+        dmg = max(0, int(dmg))
+        self.hp = _clamp(self.hp + dmg, 0, self.maxhp)
+        return self.hp
+
+    def restore(self):
+        self.hp = self.maxhp
+        self.mp = self.maxmp
+
+    def reduce_mp(self, cost):
+        self.mp = _clamp(self.mp - max(0, int(cost)), 0, self.maxmp)
+        return self.mp
+
+    def restore_mp(self, amount):
+        self.mp = _clamp(self.mp + max(0, int(amount)), 0, self.maxmp)
+        return self.mp
 
     def get_hp(self):
         return self.hp
@@ -52,8 +84,18 @@ class Person:
     def get_max_mp(self):
         return self.maxmp
 
-    def reduce_mp(self, cost):
-        self.mp -= cost
+    def is_alive(self):
+        return self.hp > 0
+
+    def can_cast(self, spell):
+        return self.mp >= spell.cost
+
+    def add_item(self, item, quantity=1):
+        for entry in self.items:
+            if entry["item"] is item:
+                entry["quantity"] += quantity
+                return
+        self.items.append({"item": item, "quantity": quantity})
 
     def choose_action(self):
         i = 1
@@ -76,21 +118,8 @@ class Person:
 
         print("\n" + bcolors.OKGREEN + bcolors.BOLD + "    ITEMS:" + bcolors.ENDC)
         for item in self.items:
-            print("        " + str(i) + ".", item["item"].name + ":", item["item"].description, " (x" + str(item["quantity"]) +")")
+            print("        " + str(i) + ".", item["item"].name + ":", item["item"].description, " (x" + str(item["quantity"]) + ")")
             i += 1
-
-    def choose_target(self, enemies):
-        i = 1
-
-        print("\n" + bcolors.FAIL + bcolors.BOLD + "    TARGET:" + bcolors.ENDC)
-        for enemy in enemies:
-            if enemy.get_hp() != 0:
-                print("        " + str(i) + ".", enemy.name)
-                i += 1
-        choice = int(input("    Choose target:")) - 1
-        return choice
-
-
 
     def get_enemy_stats(self):
         hp_bar = ""
@@ -126,7 +155,7 @@ class Person:
         bar_ticks = (self.hp / self.maxhp) * 100 / 4
 
         mp_bar = ""
-        mp_ticks = (self.mp / self.maxmp) * 100 / 10
+        mp_ticks = (self.mp / self.maxmp) * 100 / 10 if self.maxmp else 0
 
         while bar_ticks > 0:
             hp_bar += "█"
@@ -173,21 +202,16 @@ class Person:
 
         print("                     _________________________              __________ ")
         print(bcolors.BOLD + self.name + "    " +
-              current_hp +" |" + bcolors.OKGREEN + hp_bar + bcolors.ENDC + "|    " +
+              current_hp + " |" + bcolors.OKGREEN + hp_bar + bcolors.ENDC + "|    " +
               current_mp + " |" + bcolors.OKBLUE + mp_bar + bcolors.ENDC + "|")
 
-    def choose_enemy_spell(self):
-        magic_choice = random.randrange(0, len(self.magic))
-        spell = self.magic[magic_choice]
-        magic_dmg = spell.generate_damage()
-
+    def choose_enemy_spell(self, rng=None):
+        rng = rng or random
         pct = self.hp / self.maxhp * 100
-
-        if self.mp < spell.cost or spell.type == "white" and pct > 50:
-            self.choose_enemy_spell()
-        else:
-            return spell, magic_dmg
-
-
-
-
+        usable = [spell for spell in self.magic
+                  if self.can_cast(spell)
+                  and (spell.type != "white" or pct <= 50)]
+        if not usable:
+            return None, 0
+        spell = usable[rng.randrange(0, len(usable))]
+        return spell, spell.generate_damage(rng)
